@@ -41,13 +41,13 @@ python3 tools/manager.py
 A desktop window for running a tournament offline. Every change is saved straight away to the private file in `tournaments/`.
 
 1. **New…**: create a tournament. Its code is shown in the **Details** tab, with buttons to copy the code and the share link.
-2. **Players & groups**: add players one at a time or with **Add many…** (one name per line), and put them in seeding order with ▲/▼. Once there are at least 6, choose a group format and press **Lock groups**.
+2. **Players & groups**: add players one at a time or with **Add many…** (one name per line). Once there are at least 6, choose a group format and press **🎲 Draw groups** for a random draw (see *The group draw* below).
 3. **Group matches**: double-click a match to enter its set scores. Scores are checked: first to 11, win by 2, and the match must be finished.
 4. **Knockout**: matches appear as soon as their players are known. Double-click to enter the score.
 5. **Standings**: group tables with W / SW / Pts and the best 3rd places.
 6. **Publish**: encrypts the tournaments, then commits and pushes **only** `data/` to GitHub. The status next to the button shows whether the website is up to date.
 
-Locked groups keep the draw fixed while results come in. To change the player list afterwards, press **Unlock groups…**, which deletes all results. Renaming a player is always allowed and updates their results too.
+The draw stays fixed while results come in. To change the player list afterwards, press **Undo draw…**, which also deletes all results, and then draw again. Renaming a player is always allowed and updates their results too.
 
 The app needs tkinter, which comes with Python on most systems. On Fedora, if it's missing: `sudo dnf install python3-tkinter`.
 
@@ -68,15 +68,25 @@ You need `python3` and `openssl`. Nothing else is required.
 ## Rules
 
 - **Quorum:** a tournament starts only when it has **at least 6 players** (maximum 40). Until then the page shows "Waiting for players".
-- **Groups:** players are split into groups of 3–5 that play a round robin. Unless `groups` is set, players are placed in snake order, so the order of the `players` list is the seeding.
+- **Groups:** players are split into groups of 3–5 that play a round robin, using a **completely random draw** (see below).
 - **Group points:** each win is **1 point**. The ranking table shows **wins**, **sets won** and **points** (the sum of points scored across all sets). Order: wins, then sets won, then points, then head-to-head when exactly two players are tied.
 - **Knockout:** the top 2 of each group go through, plus the best 3rd places when the bracket needs them. Best 3rds are compared per match, because groups can have different sizes. A 3rd-place match is played.
+
+## The group draw
+
+The groups are drawn **completely at random**, like balls drawn from a pot. There is no seeding.
+
+1. The manager app shuffles all players with the operating system's **cryptographic random generator** (Python `secrets`). The order the names were typed in has no influence.
+2. The balls are drawn one at a time, and each goes to the next group in turn (A, B, C, A, B, C…), skipping groups that are already full. The app shows this as an animated draw.
+3. The draw is saved with its date and time, and the website shows *"Groups drawn at random on DD/MM/YYYY HH:MM"*.
+
+Until the draw is published, the website shows **"Waiting for the draw"** with the registered players. The website never draws groups itself.
 
 ## Tournament format by number of players
 
 The format depends on the number of players. Groups have 3–5 players and play a round robin (everyone plays everyone in their group). The knockout bracket always has 4, 8 or 16 places. When the group winners and runners-up don't fill the bracket, the best 3rd-placed players take the remaining places.
 
-The table shows the **default (recommended)** format. When locking the groups in the manager app you can choose another valid format; for example, 12 players can also play 4 groups of 3.
+The table shows the **default (recommended)** format. When making the draw in the manager app you can choose another valid format; for example, 12 players can also play 4 groups of 3.
 
 | Players | Groups | Group sizes | Who reaches the knockout | Knockout starts at | Group matches | Knockout matches* | Total matches |
 |---:|---:|---|---|---|---:|---:|---:|
@@ -140,8 +150,9 @@ How the default is chosen: about 4 players per group. When two options are equal
 
 | Field | Meaning |
 |---|---|
-| `players` | Participant names, in seeding order. Names must be unique. |
-| `groups` | *Optional.* Your own group draw. Leave it out to use the automatic seeded draw. Every player must be in exactly one group of at least 3. |
+| `players` | Participant names, in any order. Names must be unique. |
+| `groups` | Written by the app's random draw. Without it, the website shows "Waiting for the draw". Every player must be in exactly one group of at least 3. |
+| `drawnAt` | Date and time of the draw (`DD/MM/YYYY HH:MM`), written by the app. |
 | `groupResults` | One entry per finished group match. The `a`/`b` order is free, and `sets` are from `a`'s point of view. |
 | `knockoutResults` | Same format. The page places each result in the bracket by matching the two players. |
 | `bestOf` | 3, 5 or 7 (default 5). |

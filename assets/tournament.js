@@ -221,7 +221,7 @@ function build(data){
   if(!t.quorum) return t;
   if(N > MAX_PLAYERS){ t.quorum = false; t.tooMany = true; return t; }
 
-  // groups: taken from JSON if given and valid, otherwise a seeded snake draw in player-list order
+  // groups come only from the random draw made in the offline manager app; the page never draws them itself
   let groups = null;
   if(Array.isArray(d.groups) && d.groups.length){
     const seen = new Set(), g = [], problems = [];
@@ -239,19 +239,11 @@ function build(data){
     if(g.some(x => x.length < 3)) problems.push("every group needs at least 3 players");
     if(g.length > 8) problems.push("at most 8 groups are supported");
     else if(thirdsNeeded(g.length) > g.length) problems.push(`${g.length} groups cannot fill a knockout bracket`);
-    if(problems.length) t.warn.push(`"groups" ignored (${problems.join("; ")}). Using an automatic seeded draw instead.`);
+    if(problems.length) t.warn.push(`"groups" ignored (${problems.join("; ")}). Make the draw again in the manager app.`);
     else groups = g;
   }
-  if(!groups){
-    const f = recommended(N);
-    groups = f.sizes.map(() => []);
-    let k = 0, r = 0;
-    while(k < N){
-      const seq = r % 2 ? [...groups.keys()].reverse() : [...groups.keys()];
-      for(const gi of seq){ if(k < N && groups[gi].length < f.sizes[gi]) groups[gi].push(k++); }
-      r++;
-    }
-  }
+  if(!groups){ t.quorum = false; t.drawPending = true; return t; }   // quorum reached, draw not made yet
+  t.drawnAt = d.drawnAt ? String(d.drawnAt) : "";
   t.groups = groups; t.G = groups.length; t.K = koSize(t.G); t.T = thirdsNeeded(t.G);
   t.sizes = groups.map(g => g.length); t.pairs = buildPairs(t.G, t.T);
   t.groupOf = {}; groups.forEach((g, gi) => g.forEach(p => t.groupOf[p] = gi));
@@ -327,6 +319,9 @@ function warningsHTML(t){
 }
 function quorumHTML(t){
   const N = t.players.length;
+  if(t.drawPending) return `<div class="card" style="margin-top:20px"><div class="card-h"><h2>Waiting for the draw</h2><small>${N} players registered</small></div>
+    <div class="card-b"><div class="hint" style="margin-bottom:14px">The quorum is reached. The groups will be drawn at random by the organiser.</div>
+    <div class="plist">${t.players.map(p => `<span class="chip">${avatar(p)}${esc(p)}</span>`).join("")}</div></div></div>`;
   if(t.tooMany) return `<div class="card"><div class="card-h"><h2>Too many players</h2></div><div class="card-b hint">${N} players registered. The maximum is ${MAX_PLAYERS}.</div></div>`;
   return `<div class="card" style="margin-top:20px"><div class="card-h"><h2>Waiting for players</h2><small>Registration</small></div>
     <div class="card-b"><div class="hint">The tournament starts when at least <b>${QUORUM}</b> players are registered: ${N} of ${QUORUM} so far, ${QUORUM - N} more needed.</div>
@@ -359,7 +354,7 @@ function groupsHTML(t, km){
   const thirdQ = new Set(km.groupsDone && t.T ? thirdsTable(t).slice(0, t.T).map(r => r.pid) : []);
   return `<div class="groups">${t.groups.map((_,gi) => groupCardHTML(t, gi, thirdQ)).join("")}</div>
     <div class="note free"><span><i class="key" style="background:var(--q)"></i>Qualified</span>${t.T ? `<span><i class="key" style="background:var(--q3)"></i>Qualified as best 3rd</span>` : ""}${statKey}
-    <span>Order: W → SW → Pts → head-to-head</span><span>Best of ${t.bestOf}</span></div>`;
+    <span>Order: W → SW → Pts → head-to-head</span><span>Best of ${t.bestOf}</span>${t.drawnAt ? `<span>Groups drawn at random on ${esc(t.drawnAt)}</span>` : ""}</div>`;
 }
 function thirdsHTML(t, km){
   const rows = thirdsTable(t);
@@ -384,7 +379,7 @@ function bracketHTML(t, km){
 }
 function tournamentHTML(t, tab){
   let html = warningsHTML(t);
-  if(!t.quorum) return {html: html + quorumHTML(t), tab};
+  if(!t.quorum) return {html: html + quorumHTML(t), tab, phase: t.drawPending ? "Waiting for the draw" : "Registration"};
   const km = koModel(t), ph = phaseOf(t, km);
   if(!tab) tab = ph.key === "groups" ? "groups" : "ko";
   if(tab === "thirds" && !t.T) tab = "groups";

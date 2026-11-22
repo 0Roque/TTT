@@ -10,7 +10,7 @@ Run:  python3 tools/manager.py
 The group/bracket logic below mirrors assets/tournament.js so the matches shown
 here are exactly the ones shown on the website.
 """
-import json, math, os, re, subprocess, sys
+import json, math, os, re, secrets, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
@@ -60,16 +60,22 @@ def format_label(f, rec=False):
     return f"{f['G']} group{'s' if f['G'] > 1 else ''} ({'-'.join(map(str, f['sizes']))}) · {q} → {ROUND_NAME[f['K']]}" + ("  ★ recommended" if rec else "")
 
 
-def snake(n, sizes):
-    groups = [[] for _ in sizes]
-    k = r = 0
-    while k < n:
-        seq = range(len(sizes) - 1, -1, -1) if r % 2 else range(len(sizes))
-        for g in seq:
-            if k < n and len(groups[g]) < sizes[g]:
-                groups[g].append(k); k += 1
-        r += 1
-    return groups
+def ballot(n, sizes):
+    """Completely random draw, like pulling balls from a pot.
+
+    The players are shuffled with the operating system's cryptographic random generator (the order of the
+    player list has no influence), then each ball drawn goes to the next group in turn (A, B, C, A, B, C…),
+    skipping groups that are already full. Returns (groups, draw order).
+    """
+    order = list(range(n))
+    secrets.SystemRandom().shuffle(order)
+    groups, g = [[] for _ in sizes], 0
+    for p in order:
+        while len(groups[g]) >= sizes[g]:
+            g = (g + 1) % len(sizes)
+        groups[g].append(p)
+        g = (g + 1) % len(sizes)
+    return groups, order
 
 
 def rr(ps):
@@ -206,15 +212,15 @@ class Model:
                 self.idx[nm.lower()] = len(self.players); self.players.append(nm)
         N = len(self.players)
         self.quorum = QUORUM <= N <= MAX_PLAYERS
-        self.locked = False
+        self.locked = self.drawn = False      # "drawn": the random draw has been made (groups are fixed)
         self.groups = None
         if not self.quorum:
             return
         g = self._custom_groups(d.get("groups"))
-        if g:
-            self.groups, self.locked = g, True
-        else:
-            self.groups = snake(N, recommended(N)["sizes"])
+        if not g:
+            return                            # quorum reached, waiting for the draw
+        self.groups, self.locked = g, True
+        self.drawn = True
         self.G = len(self.groups); self.K = ko_size(self.G); self.T = thirds_needed(self.G)
         self.pairs = build_pairs(self.G, self.T)
         self.group_of = {p: gi for gi, grp in enumerate(self.groups) for p in grp}
@@ -508,7 +514,7 @@ class App(tk.Tk):
     def _build_players(self):
         f = self.tab_players; f.columnconfigure(1, weight=1); f.rowconfigure(2, weight=1)
         left = ttk.Frame(f); left.grid(row=0, column=0, rowspan=3, sticky="nsw", padx=(0, 20))
-        ttk.Label(left, text="Players (seeding order)", style="B.TLabel").pack(anchor="w")
+        ttk.Label(left, text="Players", style="B.TLabel").pack(anchor="w")
         self.quorum_lbl = ttk.Label(left, text="", style="Muted.TLabel"); self.quorum_lbl.pack(anchor="w", pady=(2, 8))
         add = ttk.Frame(left); add.pack(fill="x")
         self.v_new = tk.StringVar()
@@ -522,18 +528,16 @@ class App(tk.Tk):
         self.plist.bind("<Double-Button-1>", lambda _e: self.rename_player())
         bf = ttk.Frame(left); bf.pack(fill="x")
         self.p_btns = [ttk.Button(bf, text="Add many…", command=self.add_many),
-                       ttk.Button(bf, text="▲", width=3, command=lambda: self.move_player(-1)),
-                       ttk.Button(bf, text="▼", width=3, command=lambda: self.move_player(1)),
                        ttk.Button(bf, text="Remove", command=self.remove_player)]
         for b in self.p_btns: b.pack(side="left", padx=(0, 4))
         ttk.Button(bf, text="Rename…", command=self.rename_player).pack(side="left")
 
-        ttk.Label(f, text="Groups", style="B.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Label(f, text="Group draw", style="B.TLabel").grid(row=0, column=1, sticky="w")
         gf = ttk.Frame(f); gf.grid(row=1, column=1, sticky="ew", pady=(4, 8))
         self.v_fmt = tk.StringVar()
         self.fmt_box = ttk.Combobox(gf, textvariable=self.v_fmt, state="readonly", width=58); self.fmt_box.pack(side="left")
         self.fmt_box.bind("<<ComboboxSelected>>", lambda _e: self.refresh_groups_preview())
-        self.lock_btn = ttk.Button(gf, text="Lock groups", style="Accent.TButton", command=self.toggle_lock); self.lock_btn.pack(side="left", padx=6)
+        self.lock_btn = ttk.Button(gf, text="🎲 Draw groups", style="Accent.TButton", command=self.toggle_lock); self.lock_btn.pack(side="left", padx=6)
         self.groups_txt = tk.Text(f, height=20, wrap="word", font=("TkFixedFont", 10), relief="flat", background="#f8f9fa", padx=12, pady=10)
         self.groups_txt.grid(row=2, column=1, sticky="nsew")
 
@@ -653,8 +657,8 @@ class App(tk.Tk):
 
     def guard_locked(self):
         if self.m and self.m.locked:
-            messagebox.showinfo("Groups are locked", "The groups are locked, so the player list can't change.\n\n"
-                                "To change players, unlock the groups first (this deletes all results). Renaming is always allowed.")
+            messagebox.showinfo("Groups drawn", "The groups have been drawn, so the player list can't change.\n\n"
+                                "To change players, undo the draw first (this deletes all results). Renaming is always allowed.")
             return True
         return False
 
@@ -694,14 +698,6 @@ class App(tk.Tk):
         if messagebox.askyesno("Remove player", f"Remove “{nm}”?"):
             del self.d["players"][i]; self.save()
 
-    def move_player(self, step):
-        i = self.selected_player()
-        if i is None or self.guard_locked(): return
-        j = i + step
-        if 0 <= j < len(self.d["players"]):
-            p = self.d["players"]; p[i], p[j] = p[j], p[i]; self.save()
-            self.plist.selection_set(j); self.plist.see(j)
-
     def rename_player(self):
         i = self.selected_player()
         if i is None: return
@@ -720,17 +716,53 @@ class App(tk.Tk):
 
     def toggle_lock(self):
         m = self.m
-        if not m or not m.quorum: return
-        if m.locked:
+        if not m or not m.quorum or getattr(self, "drawing", False): return
+        if m.drawn:
             n = len(self.d["groupResults"]) + len(self.d["knockoutResults"])
-            if not messagebox.askyesno("Unlock groups", f"Unlock the groups?\n\nThis deletes all {n} result(s) so the player list and draw can change.", icon="warning"):
+            msg = "Undo the draw?\n\nThe groups are removed so players can change and a new draw can be made."
+            if n: msg += f"\n\nThis also deletes all {n} result(s)."
+            if not messagebox.askyesno("Undo draw", msg, icon="warning"):
                 return
-            self.d.pop("groups", None); self.d["groupResults"] = []; self.d["knockoutResults"] = []
-        else:
-            f = self.chosen_format()
-            groups = snake(len(m.players), f["sizes"])
-            self.d["groups"] = [[m.players[p] for p in g] for g in groups]
-        self.save()
+            for k in ("groups", "drawnAt"): self.d.pop(k, None)
+            self.d["groupResults"] = []; self.d["knockoutResults"] = []
+            self.save(); return
+        f = self.chosen_format()
+        if not messagebox.askyesno("Draw groups", f"Draw {len(m.players)} players at random into {format_label(f)}?\n\n"
+                                   "The draw is final until you undo it."):
+            return
+        groups, order = ballot(len(m.players), f["sizes"])
+        self.animate_draw(groups, order)
+
+    def animate_draw(self, groups, order):
+        """Reveals the ballot one ball at a time, then saves the groups."""
+        m, t = self.m, self.groups_txt
+        where = {p: gi for gi, g in enumerate(groups) for p in g}
+        self.drawing = True
+        busy = (self.lock_btn, self.fmt_box, self.pick, self.new_entry, self.add_btn, *self.p_btns)
+        for w in busy: w.config(state="disabled")
+        delay = max(120, 5000 // len(order))
+        shown = [[] for _ in groups]
+
+        def show(i):
+            t.config(state="normal"); t.delete("1.0", "end")
+            t.insert("end", f"DRAWING… ball {i} of {len(order)}\n\n" if i < len(order) else "DRAW COMPLETE\n\n")
+            if i:
+                p = order[i - 1]; t.insert("end", f"Ball {i}:  {m.players[p]}  →  Group {GL(where[p])}\n\n")
+            for gi, g in enumerate(shown):
+                t.insert("end", f"Group {GL(gi)}\n" + "".join(f"   {m.players[p]}\n" for p in g) + "   ·\n" * (len(groups[gi]) - len(g)) + "\n")
+            t.config(state="disabled")
+
+        def step(i=0):
+            if i < len(order):
+                p = order[i]; shown[where[p]].append(p)
+                show(i + 1); self.after(delay, step, i + 1)
+            else:
+                self.drawing = False
+                self.pick.config(state="readonly")
+                self.d["groups"] = [[m.players[p] for p in g] for g in groups]
+                self.d["drawnAt"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                self.save()
+        show(0); self.after(delay, step)
 
     def chosen_format(self):
         fm = formats(len(self.m.players))
@@ -738,10 +770,9 @@ class App(tk.Tk):
         return fm[i] if 0 <= i < len(fm) else recommended(len(self.m.players))
 
     def ensure_locked(self):
-        if self.m.locked: return True
-        if not messagebox.askyesno("Lock groups", "Results can only be entered once the groups are locked.\n\nLock the groups now, as shown in the “Players & groups” tab?"):
-            return False
-        self.toggle_lock(); return self.m.locked
+        if self.m.drawn: return True
+        messagebox.showinfo("Draw first", "Results can be entered once the groups are drawn.\n\nMake the draw in the “Players & groups” tab.")
+        return False
 
     # ── results ──
     def set_result(self, key, a, b, sets):
@@ -754,14 +785,10 @@ class App(tk.Tk):
 
     def edit_group_result(self):
         sel = self.gtree.selection()
-        if not sel or not self.m or not self.m.quorum: return
+        if not sel or not self.m or not self.m.drawn: return
         gi, a, b = map(int, sel[0].split(":"))
         if not self.ensure_locked(): return
         m = self.m
-        if m.group_of[a] != m.group_of[b]:   # the locked draw differs from the preview this match came from
-            messagebox.showinfo("Groups locked", "The groups are now locked with the draw chosen in “Players & groups”. Please pick the match again.")
-            return
-        gi = m.group_of[a]
         dlg = ScoreDialog(self, f"Group {GL(gi)}: {m.players[a]} vs {m.players[b]}", m.players[a], m.players[b], m.best_of, m.lookup(m.gr, a, b))
         if dlg.result is not None:
             self.set_result("groupResults", a, b, dlg.result)
@@ -851,36 +878,43 @@ class App(tk.Tk):
         if m.quorum:
             fm = formats(N); rec = recommended(N)
             self.fmt_box["values"] = [format_label(f, f["G"] == rec["G"]) for f in fm]
-            if m.locked:
-                cur = next((i for i, f in enumerate(fm) if f["G"] == m.G), -1)
+            if m.drawn:
+                cur = next((i for i, f in enumerate(fm) if f["G"] == m.G and f["sizes"] == sorted((len(g) for g in m.groups), reverse=True)), -1)
                 self.fmt_box.set(format_label({"G": m.G, "K": m.K, "T": m.T, "sizes": [len(g) for g in m.groups]}) if cur < 0 else self.fmt_box["values"][cur])
             elif self.fmt_box.current() < 0 or self.fmt_box.current() >= len(fm):
                 self.fmt_box.current(fm.index(rec))
             self.fmt_box.config(state="disabled" if m.locked else "readonly")
-            self.lock_btn.config(state="normal", text="Unlock groups…" if m.locked else "Lock groups")
+            self.lock_btn.config(state="normal", text="Undo draw…" if m.drawn else "🎲 Draw groups")
         else:
             self.fmt_box.set(""); self.fmt_box["values"] = []; self.fmt_box.config(state="disabled")
-            self.lock_btn.config(state="disabled", text="Lock groups")
+            self.lock_btn.config(state="disabled", text="🎲 Draw groups")
         self.refresh_groups_preview()
 
     def refresh_groups_preview(self):
+        if getattr(self, "drawing", False): return
         m, t = self.m, self.groups_txt
         t.config(state="normal"); t.delete("1.0", "end")
         if not m.quorum:
-            t.insert("end", f"Add at least {QUORUM} players to form groups." if len(m.players) < QUORUM else f"Too many players (maximum {MAX_PLAYERS}).")
+            t.insert("end", f"Add at least {QUORUM} players before the draw." if len(m.players) < QUORUM else f"Too many players (maximum {MAX_PLAYERS}).")
+        elif not m.drawn:
+            f = self.chosen_format()
+            t.insert("end", "NOT DRAWN YET\n\n"
+                     f"Format: {format_label(f)}\n\n"
+                     "Press “🎲 Draw groups” to draw every player completely at random,\n"
+                     "like balls from a pot. The order of the player list has no influence.\n"
+                     "Each ball goes to the next group in turn: A, B, C, A, B, C…\n\n"
+                     "Until the draw is published, the website shows “Waiting for the draw”.")
         else:
-            groups = m.groups if m.locked else snake(len(m.players), self.chosen_format()["sizes"])
-            t.insert("end", "LOCKED: these groups are final.\n\n" if m.locked else
-                     "PREVIEW: players are placed in snake order by seeding.\nLock the groups before the first match.\n\n")
-            for gi, g in enumerate(groups):
+            t.insert("end", f"DRAWN AT RANDOM{' on ' + self.d['drawnAt'] if self.d.get('drawnAt') else ''}: these groups are final.\n\n")
+            for gi, g in enumerate(m.groups):
                 t.insert("end", f"Group {GL(gi)}\n" + "".join(f"   {m.players[p]}\n" for p in g) + "\n")
         t.config(state="disabled")
 
     def refresh_group_matches(self):
         tv, m = self.gtree, self.m
         tv.delete(*tv.get_children())
-        if not m or not m.quorum:
-            self.g_info.config(text=f"Needs at least {QUORUM} players."); return
+        if not m or not m.drawn:
+            self.g_info.config(text=f"Needs at least {QUORUM} players." if not (m and m.quorum) else "Make the draw in “Players & groups” first."); return
         flt, done_n, total = self.v_gfilter.get(), 0, 0
         for gi in range(m.G):
             for ri, rd in enumerate(m.group_rounds(gi)):
@@ -890,13 +924,13 @@ class App(tk.Tk):
                     sa, sb, _, _ = summ(s) if s else (0, 0, 0, 0)
                     tv.insert("", "end", iid=f"{gi}:{a}:{b}", tags=("done" if s else "todo",),
                               values=(GL(gi), ri + 1, m.players[a], f"{sa} – {sb}" if s else "—", m.players[b], ", ".join(f"{x}-{y}" for x, y in s) if s else ""))
-        self.g_info.config(text=f"{done_n} of {total} matches played" + ("" if m.locked else "  ·  groups not locked yet") + "  ·  double-click a match to enter its score")
+        self.g_info.config(text=f"{done_n} of {total} matches played  ·  double-click a match to enter its score")
 
     def refresh_ko(self):
         tv, m = self.ktree, self.m
         tv.delete(*tv.get_children())
-        if not m or not m.quorum:
-            self.k_info.config(text=f"Needs at least {QUORUM} players."); return
+        if not m or not m.drawn:
+            self.k_info.config(text=f"Needs at least {QUORUM} players." if not (m and m.quorum) else "Make the draw in “Players & groups” first."); return
         km = m.ko_model()
         ms = [x for _, r in km["rounds"] for x in r] + ([km["third"]] if km["third"] else [])
         for x in sorted(ms, key=lambda x: x["num"]):
@@ -913,8 +947,8 @@ class App(tk.Tk):
     def refresh_standings(self):
         t, m = self.stand_txt, self.m
         t.config(state="normal"); t.delete("1.0", "end")
-        if not m.quorum:
-            t.insert("end", f"Needs at least {QUORUM} players.")
+        if not m.drawn:
+            t.insert("end", f"Needs at least {QUORUM} players." if not m.quorum else "The groups haven't been drawn yet.")
         else:
             w = max(10, *(len(p) for p in m.players)) + 2
             head = f"  #  {'Player':<{w}}{'P':>4}{'W':>4}{'SW':>5}{'Pts':>6}\n"
