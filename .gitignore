@@ -1,2 +1,21 @@
+# Private, readable tournament files: never commit (the pre-commit hook also blocks them)
 tournaments/
+
+# Backups / editor copies that could contain tournament data or codes
+*.bak
+*.orig
+*.tmp
+*~
+*.swp
+.#*
+*.json.save
+.env
+.env.*
+
+# Python / OS / editor clutter
 __pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
