@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Table Tennis Tournament</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<style>
+  .codebox{max-width:560px;margin:40px auto}
+  #code{flex:1;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;letter-spacing:.5px}
+  .count{font-size:12px;color:var(--mut);margin-top:6px}
+</style>
+</head>
+<body>
+<header><div class="hin"><div class="ballic"></div><div><h1>Table Tennis Tournament</h1><p>Group stage → knockout bracket</p></div></div></header>
+<main>
+  <form class="card codebox" id="f" novalidate>
+    <div class="sec-title"><h2>View a tournament</h2></div>
+    <p class="hint">Enter the 32-character tournament code you received from the organiser.</p>
+    <div class="row" style="margin-top:14px">
+      <input type="text" id="code" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 3k9x…" aria-label="Tournament code">
+      <button class="btn pri" type="submit">View →</button>
+    </div>
+    <div class="count" id="count">0 / 32</div>
+    <div class="err" id="err"></div>
+  </form>
+</main>
+<script src="assets/vault.js"></script>
+<script>
+"use strict";
+const CODE_RE = /^[a-z0-9]{32}$/;
+const inp = document.getElementById("code"), err = document.getElementById("err"), count = document.getElementById("count");
+inp.addEventListener("input", () => { inp.value = inp.value.toLowerCase().replace(/[^a-z0-9]/g, ""); count.textContent = `${inp.value.length} / 32`; err.textContent = ""; });
+document.getElementById("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const code = inp.value.trim().toLowerCase();
+  if(!CODE_RE.test(code)){ err.textContent = "A tournament code is exactly 32 letters (a–z) and digits."; return; }
+  try{
+    const r = await fetch(`${await Vault.fileUrl(code)}?v=${Date.now()}`, {method:"HEAD", cache:"no-store"});
+    if(r.status === 404){ err.textContent = "No tournament found with this code."; return; }
+  }catch(_){ /* network hiccup: let the tournament page report it */ }
+  location.href = `tournament.html#${code}`;
+});
+const q = location.hash.slice(1);
+if(q){ inp.value = q; inp.dispatchEvent(new Event("input")); }
+inp.focus();
+</script>
+</body>
+</html>
