@@ -207,7 +207,7 @@ function koModel(t){
 /* ---------- build tournament from JSON ---------- */
 function build(data){
   const d = data && typeof data === "object" ? data : {};
-  const t = {warn:[], name:String(d.name || "Table Tennis Tournament"), date:d.date ? String(d.date) : "", players:[], idx:new Map()};
+  const t = {warn:[], name:String(d.name || "Table Tennis Tournament"), date:fmtDate(d.date), players:[], idx:new Map()};
   t.bestOf = [3,5,7].includes(d.bestOf) ? d.bestOf : 5;
   if(d.bestOf !== undefined && d.bestOf !== t.bestOf) t.warn.push(`"bestOf" must be 3, 5 or 7 — using best of 5.`);
   for(const raw of Array.isArray(d.players) ? d.players : []){
@@ -281,41 +281,66 @@ function phaseOf(t, km){
   if(km.third && !km.third.sets) return {key:"Final", label:"3rd place match"};
   return {key:"done", label:"Finished"};
 }
-function pathwayHTML(t, km, ph){
-  const steps = [{key:"groups", label:`Group stage · ${t.G} group${t.G>1?"s":""}`}]
-    .concat(km.rounds.map(r => ({key:r.name, label:r.name})), [{key:"done", label:"🏆 Champion"}]);
+function stepsHTML(km, ph){
+  const steps = [{key:"groups", label:"Group stage"}].concat(km.rounds.map(r => ({key:r.name, label:r.name})), [{key:"done", label:"Champion"}]);
   const ci = steps.findIndex(s => s.key === ph.key);
-  return steps.map((s, i) => `<span class="chip ${i < ci ? "done" : i === ci ? "cur" : s.key === "done" ? "gold" : ""}">${i < ci ? "✓ " : ""}${esc(s.label)}</span>`).join('<span class="arrow">→</span>');
+  return `<ol class="steps">${steps.map((s, i) => `<li class="${i < ci || ph.key === "done" ? "done" : i === ci ? "cur" : ""}"><span class="dot"></span><span class="lbl">${esc(s.label)}</span></li>`).join("")}</ol>`;
 }
 
-/* ---------- rendering ---------- */
-const setsText = sets => sets ? sets.map(([x,y]) => `${x}-${y}`).join(" · ") : "";
-const statCells = s => `<td>${s.p}</td><td class="pts">${s.w}</td><td>${s.sw}</td><td>${s.pw}</td>`;
-const statHeads = `<th title="Matches played">Played</th><th title="Matches won — each win is 1 point">Wins</th><th title="Sets won">Sets won</th><th title="Sum of points scored across all sets">Points</th>`;
+/* ---------- formatting ---------- */
+function fmtDate(v){                         // shows dates as DD/MM/YYYY (accepts DD/MM/YYYY or YYYY-MM-DD in the file)
+  const s = String(v ?? "").trim(), m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  return m ? `${m[3].padStart(2,"0")}/${m[2].padStart(2,"0")}/${m[1]}` : s;
+}
+const AV = ["#1a73e8","#188038","#c5221f","#e37400","#9334e6","#00796b","#d01884","#5f6368","#1967d2","#b06000"];
+function avatar(nm){
+  let h = 0; for(const c of nm) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const ini = nm.split(/\s+/).filter(Boolean).slice(0, 2).map(w => [...w][0]).join("").toUpperCase();
+  return `<span class="av" style="background:${AV[h % AV.length]}" aria-hidden="true">${esc(ini)}</span>`;
+}
+const pcell = (t, p) => `<td class="pl"><span class="pcell">${avatar(t.players[p])}${esc(t.players[p])}</span></td>`;
+const setsText = sets => sets ? sets.map(([x,y]) => `${x}-${y}`).join(", ") : "";
+const statCells = s => `<td>${s.p}</td><td class="b">${s.w}</td><td>${s.sw}</td><td>${s.pw}</td>`;
+const statHeads = `<th title="Matches played">P</th><th title="Wins (1 point each)">W</th><th title="Sets won">SW</th><th title="Points scored across all sets">Pts</th>`;
+const statKey = `<span>P: played</span><span>W: wins (1 point each)</span><span>SW: sets won</span><span>Pts: points scored in all sets</span>`;
 
+/* one match, scoreboard style: each player row shows the points of every set; compact = bracket card */
+function matchHTML(t, m, label, compact){
+  const s = m.sets ? summ(m.sets) : null;
+  const row = (p, ph, side) => {
+    if(p == null) return `<div class="mr ph"><span class="av ph"></span><span class="nm">${esc(ph || "")}</span></div>`;
+    const won = s && (side ? s.b > s.a : s.a > s.b), nm = t.players[p];
+    const cells = s && !compact ? Array.from({length:t.bestOf}, (_, i) => m.sets[i]) : [];   // fixed width so columns line up
+    const gs = cells.length ? `<span class="gs">${cells.map(x => x ? `<span class="g ${x[side] > x[1-side] ? "gw" : ""}">${x[side]}</span>` : `<span class="g"></span>`).join("")}</span>` : "";
+    return `<div class="mr ${s ? (won ? "w" : "l") : ""}">${avatar(nm)}<span class="nm" title="${esc(nm)}">${esc(nm)}</span>${gs}<span class="tot">${s ? (side ? s.b : s.a) : ""}</span></div>`;
+  };
+  const status = s ? "Played" : (m.a != null && m.b != null) ? "Upcoming" : "";
+  const rows = row(m.a, m.la, 0) + row(m.b, m.lb, 1);
+  return compact
+    ? `<div class="km"><div class="kmh"><span>${esc(label)}</span><span>${status}</span></div>${rows}${s ? `<div class="kset">${setsText(m.sets)}</div>` : ""}</div>`
+    : `<div class="mt"><div class="mst"><b>${status}</b>${esc(label)}</div><div>${rows}</div></div>`;
+}
+
+/* ---------- views ---------- */
 function warningsHTML(t){
   return t.warn.length ? `<div class="warnbox"><b>Some data in the tournament file was ignored:</b><ul>${t.warn.map(w => `<li>${w}</li>`).join("")}</ul></div>` : "";
 }
 function quorumHTML(t){
   const N = t.players.length;
-  if(t.tooMany) return `<div class="card"><div class="sec-title"><h2>Too many players</h2></div><p class="hint">${N} players registered — the maximum is ${MAX_PLAYERS}.</p></div>`;
-  return `<div class="card">
-    <div class="sec-title"><h2>Waiting for players</h2><span class="chip cur">Registration</span></div>
-    <p class="hint">The tournament starts once at least <b>${QUORUM}</b> players are registered. ${N} of ${QUORUM} so far — ${QUORUM - N} more needed.</p>
+  if(t.tooMany) return `<div class="card"><div class="card-h"><h2>Too many players</h2></div><div class="card-b hint">${N} players registered. The maximum is ${MAX_PLAYERS}.</div></div>`;
+  return `<div class="card" style="margin-top:20px"><div class="card-h"><h2>Waiting for players</h2><small>Registration</small></div>
+    <div class="card-b"><div class="hint">The tournament starts when at least <b>${QUORUM}</b> players are registered: ${N} of ${QUORUM} so far, ${QUORUM - N} more needed.</div>
     <div class="qbar"><div style="width:${Math.round(100 * N / QUORUM)}%"></div></div>
-    ${N ? `<div class="plist">${t.players.map(p => `<span class="chip">${esc(p)}</span>`).join("")}</div>` : ""}
-  </div>`;
+    ${N ? `<div class="plist">${t.players.map(p => `<span class="chip">${avatar(p)}${esc(p)}</span>`).join("")}</div>` : ""}</div></div>`;
 }
 function rankingHTML(t){
   const rows = [];
   t.groups.forEach((g, gi) => { const st = statsFor(g, playedMatches(t, gi)); g.forEach(p => rows.push({p, gi, s:st[p]})); });
   rows.sort((x,y) => cmpStats(x.s, y.s) || t.players[x.p].localeCompare(t.players[y.p]));
-  return `<div class="card">
-    <div class="sec-title"><h2>Ranking</h2><span class="hint">All players · group stage</span></div>
-    <div class="tbl-wrap"><table class="st"><thead><tr><th>#</th><th>Player</th><th>Group</th>${statHeads}</tr></thead>
-    <tbody>${rows.map((r, i) => `<tr><td class="pos">${i+1}</td><td>${esc(t.players[r.p])}</td><td>${GL(r.gi)}</td>${statCells(r.s)}</tr>`).join("")}</tbody></table></div>
-    <div class="note">Each win is 1 point. Order: wins → sets won → points scored across all sets.</div>
-  </div>`;
+  return `<div class="card"><div class="card-h"><h2>Ranking</h2><small>All players · group stage</small></div>
+    <div class="tbl-wrap"><table class="st"><thead><tr><th class="pos">#</th><th class="pl">Player</th><th>Group</th>${statHeads}</tr></thead>
+    <tbody>${rows.map((r, i) => `<tr><td class="pos">${i+1}</td>${pcell(t, r.p)}<td>${GL(r.gi)}</td>${statCells(r.s)}</tr>`).join("")}</tbody></table></div>
+    <div class="note">${statKey}<span>Order: W → SW → Pts</span></div></div>`;
 }
 function groupCardHTML(t, gi, thirdQ){
   const {order, st} = rankGroup(t, gi), done = groupDone(t, gi);
@@ -323,59 +348,39 @@ function groupCardHTML(t, gi, thirdQ){
   const rows = order.map((p, i) => {
     let cls = "";
     if(done) cls = i < 2 ? "q" : (i === 2 && thirdQ.has(p)) ? "q3" : (i === 2 && t.T && !thirdQ.size) ? "" : "out";
-    return `<tr class="${cls}"><td class="pos">${i+1}</td><td>${esc(t.players[p])}</td>${statCells(st[p])}</tr>`;
+    return `<tr class="${cls}"><td class="pos">${i+1}</td>${pcell(t, p)}${statCells(st[p])}</tr>`;
   }).join("");
-  const rounds = groupRounds(t, gi).map((rd, ri) => `<div class="rd">Round ${ri+1}</div>` + rd.map(([a,b]) => {
-    const sets = lookup(t.gr, a, b), s = sets ? summ(sets) : null;
-    return `<div class="match">
-      <span class="a ${s && s.a>s.b ? "w" : ""}">${esc(t.players[a])}</span>
-      <span class="sc ${s ? "" : "empty"}">${s ? `${s.a} – ${s.b}` : "vs"}</span>
-      <span class="b ${s && s.b>s.a ? "w" : ""}">${esc(t.players[b])}</span>
-      ${s ? `<div class="sets">${setsText(sets)}</div>` : ""}</div>`;
-  }).join("")).join("");
-  return `<div class="card gcard"><div class="ghead"><h3>Group ${GL(gi)}</h3><small>${done ? "✓ Complete" : `${played}/${ms.length} played`}</small></div>
-    <div class="tbl-wrap"><table class="st"><thead><tr><th>#</th><th>Player</th>${statHeads}</tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="mlist">${rounds}</div></div>`;
+  const matches = groupRounds(t, gi).map((rd, ri) => rd.map(([a,b]) => matchHTML(t, {a, b, sets:lookup(t.gr, a, b)}, `Round ${ri+1}`, false)).join("")).join("");
+  return `<div class="card"><div class="card-h"><h2>Group ${GL(gi)}</h2><small>${done ? "Complete" : `${played} of ${ms.length} played`}</small></div>
+    <div class="tbl-wrap"><table class="st"><thead><tr><th class="pos"></th><th class="pl">Player</th>${statHeads}</tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="rdh">Matches</div>${matches}</div>`;
 }
 function groupsHTML(t, km){
   const thirdQ = new Set(km.groupsDone && t.T ? thirdsTable(t).slice(0, t.T).map(r => r.pid) : []);
-  return `<div class="legend"><span><i style="background:var(--q)"></i>Qualified (top 2)</span>${t.T ? `<span><i style="background:var(--q3)"></i>Qualified as best 3rd</span>` : ""}<span>Best of ${t.bestOf} · win = 1 point</span></div>
-    <div class="groups">${t.groups.map((_,gi) => groupCardHTML(t, gi, thirdQ)).join("")}</div>
-    <div class="note">Group order: wins → sets won → points scored across all sets → head-to-head (when exactly two players are tied).</div>`;
+  return `<div class="groups">${t.groups.map((_,gi) => groupCardHTML(t, gi, thirdQ)).join("")}</div>
+    <div class="note free"><span><i class="key" style="background:var(--q)"></i>Qualified</span>${t.T ? `<span><i class="key" style="background:var(--q3)"></i>Qualified as best 3rd</span>` : ""}${statKey}
+    <span>Order: W → SW → Pts → head-to-head</span><span>Best of ${t.bestOf}</span></div>`;
 }
 function thirdsHTML(t, km){
   const rows = thirdsTable(t);
-  const body = rows.map((r, i) => `<tr class="${km.groupsDone ? (i < t.T ? "q3" : "out") : ""}"><td class="pos">${i+1}</td><td>${esc(t.players[r.pid])}${r.done ? "" : ' <span class="hint">(provisional)</span>'}</td><td>${GL(r.g)}</td>${statCells(r.s)}<td>${r.wpm.toFixed(2)}</td><td>${r.swpm.toFixed(2)}</td><td>${r.pwpm.toFixed(1)}</td></tr>`).join("");
-  return `<div class="card">
-    <div class="sec-title"><h2>Ranking of 3rd-placed players</h2><span class="chip">${t.T} of ${rows.length} qualify</span></div>
-    <div class="tbl-wrap"><table class="st"><thead><tr><th>#</th><th>Player</th><th>Group</th>${statHeads}<th title="Wins per match">Wins/M</th><th title="Sets won per match">Sets/M</th><th title="Points scored per match">Points/M</th></tr></thead><tbody>${body}</tbody></table></div>
-    <div class="note">Compared per match so groups of different sizes are fair: wins per match → sets won per match → points scored per match. Qualified 3rd places face a group winner from a different group.</div>
-  </div>`;
-}
-function kmHTML(t, m, km){
-  const ready = m.a!=null && m.b!=null, s = m.sets ? summ(m.sets) : null, w = km.winner(m);
-  const side = (p, l, n) => {
-    const cls = p==null ? "ph" : (w==null ? "" : (w===p ? "win" : "lose")), nm = p==null ? l : t.players[p];
-    return `<div class="kp ${cls}"><span class="nm" title="${esc(nm)}">${esc(nm)}</span><span class="ss">${s ? n : ""}</span></div>`;
-  };
-  return `<div class="km ${ready && !s ? "ready" : ""}">
-    <div class="kmh"><span>M${m.num} · ${m.stage}</span><span>${s ? "Final score" : ready ? "To play" : ""}</span></div>
-    ${side(m.a, m.la, s && s.a)}${side(m.b, m.lb, s && s.b)}
-    <div class="kset">${s ? setsText(m.sets) : "&nbsp;"}</div></div>`;
+  const body = rows.map((r, i) => `<tr class="${km.groupsDone ? (i < t.T ? "q3" : "out") : ""}"><td class="pos">${i+1}</td>${pcell(t, r.pid)}<td>${GL(r.g)}${r.done ? "" : "*"}</td>${statCells(r.s)}<td>${r.wpm.toFixed(2)}</td><td>${r.swpm.toFixed(2)}</td><td>${r.pwpm.toFixed(1)}</td></tr>`).join("");
+  return `<div class="card"><div class="card-h"><h2>Best 3rd-placed players</h2><small>${t.T} of ${rows.length} qualify</small></div>
+    <div class="tbl-wrap"><table class="st"><thead><tr><th class="pos">#</th><th class="pl">Player</th><th>Group</th>${statHeads}<th title="Wins per match">W/M</th><th title="Sets won per match">SW/M</th><th title="Points scored per match">Pts/M</th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="note"><span>Compared per match (groups can differ in size): W/M → SW/M → Pts/M</span><span>Qualified 3rds face a winner from another group</span>${rows.some(r => !r.done) ? "<span>* group still in progress</span>" : ""}</div></div>`;
 }
 function bracketHTML(t, km){
+  const card = m => matchHTML(t, m, `M${m.num}`, true);
   const cols = km.rounds.map((r, ri) => {
     const lin = ri > 0 ? "lin" : "";
     let inner = "";
-    if(ri === km.rounds.length - 1) inner = `<div class="pair"><div class="slot ${lin}">${kmHTML(t, r.ms[0], km)}</div></div>`;
-    else for(let i=0;i<r.ms.length;i+=2) inner += `<div class="pair j">${[r.ms[i], r.ms[i+1]].map(m => `<div class="slot ${lin}">${kmHTML(t, m, km)}</div>`).join("")}</div>`;
+    if(ri === km.rounds.length - 1) inner = `<div class="pair"><div class="slot ${lin}">${card(r.ms[0])}</div></div>`;
+    else for(let i=0;i<r.ms.length;i+=2) inner += `<div class="pair j">${[r.ms[i], r.ms[i+1]].map(m => `<div class="slot ${lin}">${card(m)}</div>`).join("")}</div>`;
     return `<div class="round"><h4>${r.name}</h4><div class="rcol">${inner}</div></div>`;
   }).join("");
-  const champ = `<div class="champ"><div class="trophy">🏆</div><div class="cl">Champion</div><div class="cn">${km.champion!=null ? esc(t.players[km.champion]) : "?"}</div>
-    ${km.third ? `<div class="tpbox"><h5>3rd place match</h5>${kmHTML(t, km.third, km)}</div>` : ""}</div>`;
-  const status = km.groupsDone ? "" : `<div class="note" style="margin:0 0 14px">The bracket fills in as soon as every group is complete. Placeholders show where each group position goes.</div>`;
-  const podium = km.champion!=null ? `<div class="podium"><div>🥇 ${esc(t.players[km.champion])}</div><div>🥈 ${esc(t.players[km.runnerUp])}</div>${km.thirdPlace!=null ? `<div>🥉 ${esc(t.players[km.thirdPlace])}</div>` : ""}</div>` : "";
-  return `<div class="card"><div class="sec-title"><h2>Knockout stage</h2>${podium}</div>${status}<div class="bwrap"><div class="bracket">${cols}${champ}</div></div></div>`;
+  const champ = `<div class="champ"><div class="trophy">🏆</div><div class="cl">Champion</div><div class="cn">${km.champion!=null ? esc(t.players[km.champion]) : "To be decided"}</div>
+    ${km.third ? `<div class="tpbox"><h5>3rd place</h5>${card(km.third)}</div>` : ""}</div>`;
+  const podium = km.champion!=null ? `<div class="podium"><span>🥇 ${esc(t.players[km.champion])}</span><span>🥈 ${esc(t.players[km.runnerUp])}</span>${km.thirdPlace!=null ? `<span>🥉 ${esc(t.players[km.thirdPlace])}</span>` : ""}</div>` : `<small>${km.groupsDone ? "" : "Fills in when every group is complete"}</small>`;
+  return `<div class="card"><div class="card-h"><h2>Knockout stage</h2>${podium}</div><div class="bwrap"><div class="bracket">${cols}${champ}</div></div></div>`;
 }
 function tournamentHTML(t, tab){
   let html = warningsHTML(t);
@@ -383,19 +388,13 @@ function tournamentHTML(t, tab){
   const km = koModel(t), ph = phaseOf(t, km);
   if(!tab) tab = ph.key === "groups" ? "groups" : "ko";
   if(tab === "thirds" && !t.T) tab = "groups";
-  const gTotal = t.groups.reduce((n,_,gi) => n + groupMatches(t, gi).length, 0);
-  const qual = t.G === 1 ? "Top 2" : `Top 2 of each group${t.T ? ` + ${t.T} best 3rd place${t.T>1?"s":""}` : ""}`;
-  const tabs = [["groups","Groups",`${t.gr.size}/${gTotal}`], ["ranking","Ranking",t.players.length]];
-  if(t.T) tabs.push(["thirds","Best 3rds",t.T]);
-  tabs.push(["ko","Knockout",ROUND_NAME[t.K]]);
-  html += `<div class="card">
-      <div class="sec-title"><h2>Phases</h2><span class="chip cur">Now: ${esc(ph.label)}</span></div>
-      <div class="path">${pathwayHTML(t, km, ph)}</div>
-      <p class="hint" style="margin:10px 0 0">${t.players.length} players · ${t.G} group${t.G>1?"s":""} of ${[...new Set(t.sizes)].sort((a,b)=>b-a).join("/")} · ${qual} → ${ROUND_NAME[t.K]}</p>
-    </div>
-    <div class="tabs">${tabs.map(([k,l,b]) => `<button class="tab ${tab===k?"on":""}" data-tab="${k}">${l}<span class="badge">${b}</span></button>`).join("")}</div>`;
+  const tabs = [["groups","Groups"], ["ranking","Ranking"]];
+  if(t.T) tabs.push(["thirds","Best 3rds"]);
+  tabs.push(["ko","Knockout"]);
+  html += stepsHTML(km, ph)
+    + `<div class="tabs" role="tablist">${tabs.map(([k,l]) => `<button class="tab ${tab===k?"on":""}" role="tab" aria-selected="${tab===k}" data-tab="${k}">${l}</button>`).join("")}</div>`;
   html += tab === "groups" ? groupsHTML(t, km) : tab === "ranking" ? rankingHTML(t) : tab === "thirds" ? thirdsHTML(t, km) : bracketHTML(t, km);
-  return {html, tab};
+  return {html, tab, phase: ph.label, km};
 }
 
 /* ---------- page boot ---------- */
@@ -407,13 +406,13 @@ if(typeof document !== "undefined"){
   let T = null, tab = ["groups","ranking","thirds","ko"].includes(rawTab) ? rawTab : null;
   const fatal = (title, msg) => {
     document.getElementById("tsub").textContent = "";
-    app.innerHTML = `<div class="card"><div class="sec-title"><h2>${esc(title)}</h2></div><p class="hint">${esc(msg)}</p><a class="btn pri" href="./">← Enter another code</a></div>`;
+    app.innerHTML = `<div class="card" style="margin-top:20px"><div class="card-h"><h2>${esc(title)}</h2></div><div class="card-b"><p class="hint" style="margin-top:0">${esc(msg)}</p><a class="btn pri" href="./">Enter another code</a></div></div>`;
   };
   const render = () => {
     const r = tournamentHTML(T, tab); tab = r.tab; app.innerHTML = r.html;
     document.title = `${T.name} · Table Tennis`;
     document.getElementById("tname").textContent = T.name;
-    document.getElementById("tsub").textContent = [T.date, `${T.players.length} player${T.players.length===1?"":"s"}`, `best of ${T.bestOf}`].filter(Boolean).join(" · ");
+    document.getElementById("tsub").textContent = [T.date, `${T.players.length} player${T.players.length===1?"":"s"}`, `Best of ${T.bestOf}`, r.phase || "Registration"].filter(Boolean).join(" · ");
   };
   const load = async () => {
     if(!CODE_RE.test(code)) return fatal("Invalid tournament code", "A tournament code is exactly 32 characters (letters a–z and digits 0–9).");

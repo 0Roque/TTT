@@ -43,7 +43,7 @@ You need `python3` and `openssl`. Nothing else is required.
 ```json
 {
   "name": "Autumn Cup 2026",
-  "date": "2026-11-22",
+  "date": "22/11/2026",
   "bestOf": 5,
   "players": ["Ana", "Bruno", "Clara", "David", "Eva", "Filipe"],
   "groups": [["Ana", "David", "Eva"], ["Bruno", "Clara", "Filipe"]],

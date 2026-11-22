@@ -62,7 +62,7 @@ def cmd_new(name="Table Tennis Tournament", best_of="5"):
         code = "".join(secrets.choice(ALPHABET) for _ in range(32))
         if not (SRC / f"{code}.json").exists():
             break
-    data = {"name": name, "date": date.today().isoformat(), "bestOf": int(best_of),
+    data = {"name": name, "date": date.today().strftime("%d/%m/%Y"), "bestOf": int(best_of),
             "players": [], "groupResults": [], "knockoutResults": []}
     (SRC / f"{code}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     print(f"Tournament code: {code}")
