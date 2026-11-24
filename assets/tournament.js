@@ -23,13 +23,13 @@ function formats(N){
   }
   return out;
 }
+/* default format: 6-9 players play 2 groups and semi-finals; otherwise the longest knockout possible,
+   then about 4 players per group (on a tie, more groups) */
 function recommended(N){
-  const fm = formats(N); let best = fm[0];
-  for(const f of fm){
-    const d = Math.abs(f.G - N/4), db = Math.abs(best.G - N/4);
-    if(d < db - 1e-9 || (Math.abs(d - db) < 1e-9 && f.G > best.G)) best = f;
-  }
-  return best;
+  const fm = formats(N);
+  if(N <= 9) return fm.find(f => f.K === 4);
+  const score = f => [-f.K, Math.abs(f.G - N/4), -f.G];
+  return fm.reduce((best, f) => { const x = score(f), y = score(best); for(let i=0;i<3;i++){ if(Math.abs(x[i]-y[i]) > 1e-9) return x[i] < y[i] ? f : best; } return best; });
 }
 
 /* ---------- round robin ---------- */
@@ -46,6 +46,21 @@ function rr(ps){
 }
 const groupRounds = (t, gi) => rr(t.groups[gi]);
 const groupMatches = (t, gi) => groupRounds(t, gi).flat();
+/* Play order of all group matches: pairs listed in "matchOrder" (set in the manager app) first, then the rest in
+   default order (round 1 of every group, then round 2…). Returns [{gi, r, a, b}]. */
+function buildSchedule(t, order){
+  const rounds = t.groups.map((_, gi) => groupRounds(t, gi)), base = [];
+  for(let r=0; r<Math.max(...rounds.map(x => x.length)); r++)
+    rounds.forEach((rd, gi) => (rd[r] || []).forEach(([a,b]) => base.push({gi, r, a, b})));
+  const byKey = new Map(base.map(m => [pairKey(m.a, m.b), m])), seen = new Set(), out = [];
+  for(const e of Array.isArray(order) ? order : []){
+    if(!Array.isArray(e) || e.length !== 2) continue;
+    const [a, b] = e.map(v => t.idx.get(String(v ?? "").trim().toLowerCase()));
+    const k = a !== undefined && b !== undefined ? pairKey(a, b) : null;
+    if(byKey.has(k) && !seen.has(k)){ seen.add(k); out.push(byKey.get(k)); }
+  }
+  return out.concat(base.filter(m => !seen.has(pairKey(m.a, m.b))));
+}
 
 /* ---------- results ---------- */
 const pairKey = (x, y) => x < y ? `${x}-${y}` : `${y}-${x}`;
@@ -247,6 +262,8 @@ function build(data){
   t.groups = groups; t.G = groups.length; t.K = koSize(t.G); t.T = thirdsNeeded(t.G);
   t.sizes = groups.map(g => g.length); t.pairs = buildPairs(t.G, t.T);
   t.groupOf = {}; groups.forEach((g, gi) => g.forEach(p => t.groupOf[p] = gi));
+  t.schedule = buildSchedule(t, d.matchOrder);
+  t.matchNo = new Map(t.schedule.map((m, i) => [pairKey(m.a, m.b), i + 1]));
 
   t.gr = new Map(); t.kr = new Map();
   for(const e of Array.isArray(d.groupResults) ? d.groupResults : []){
@@ -345,7 +362,7 @@ function groupCardHTML(t, gi, thirdQ){
     if(done) cls = i < 2 ? "q" : (i === 2 && thirdQ.has(p)) ? "q3" : (i === 2 && t.T && !thirdQ.size) ? "" : "out";
     return `<tr class="${cls}"><td class="pos">${i+1}</td>${pcell(t, p)}${statCells(st[p])}</tr>`;
   }).join("");
-  const matches = groupRounds(t, gi).map((rd, ri) => rd.map(([a,b]) => matchHTML(t, {a, b, sets:lookup(t.gr, a, b)}, `Round ${ri+1}`, false)).join("")).join("");
+  const matches = t.schedule.filter(m => m.gi === gi).map(m => matchHTML(t, {a:m.a, b:m.b, sets:lookup(t.gr, m.a, m.b)}, `Match ${t.matchNo.get(pairKey(m.a, m.b))}`, false)).join("");
   return `<div class="card"><div class="card-h"><h2>Group ${GL(gi)}</h2><small>${done ? "Complete" : `${played} of ${ms.length} played`}</small></div>
     <div class="tbl-wrap"><table class="st"><thead><tr><th class="pos"></th><th class="pl">Player</th>${statHeads}</tr></thead><tbody>${rows}</tbody></table></div>
     <div class="rdh">Matches</div>${matches}</div>`;
@@ -355,6 +372,12 @@ function groupsHTML(t, km){
   return `<div class="groups">${t.groups.map((_,gi) => groupCardHTML(t, gi, thirdQ)).join("")}</div>
     <div class="note free"><span><i class="key" style="background:var(--q)"></i>Qualified</span>${t.T ? `<span><i class="key" style="background:var(--q3)"></i>Qualified as best 3rd</span>` : ""}${statKey}
     <span>Order: W → SW → Pts → head-to-head</span><span>Best of ${t.bestOf}</span>${t.drawnAt ? `<span>Groups drawn at random on ${esc(t.drawnAt)}</span>` : ""}</div>`;
+}
+function scheduleHTML(t){
+  const played = t.schedule.filter(m => lookup(t.gr, m.a, m.b)).length;
+  const rows = t.schedule.map((m, i) => matchHTML(t, {a:m.a, b:m.b, sets:lookup(t.gr, m.a, m.b)}, `Match ${i+1} · Group ${GL(m.gi)}`, false)).join("");
+  return `<div class="card"><div class="card-h"><h2>Group stage schedule</h2><small>${played} of ${t.schedule.length} played</small></div>${rows}
+    <div class="note"><span>Matches are played in this order</span></div></div>`;
 }
 function thirdsHTML(t, km){
   const rows = thirdsTable(t);
@@ -383,12 +406,12 @@ function tournamentHTML(t, tab){
   const km = koModel(t), ph = phaseOf(t, km);
   if(!tab) tab = ph.key === "groups" ? "groups" : "ko";
   if(tab === "thirds" && !t.T) tab = "groups";
-  const tabs = [["groups","Groups"], ["ranking","Ranking"]];
+  const tabs = [["groups","Groups"], ["schedule","Schedule"], ["ranking","Ranking"]];
   if(t.T) tabs.push(["thirds","Best 3rds"]);
   tabs.push(["ko","Knockout"]);
   html += stepsHTML(km, ph)
     + `<div class="tabs" role="tablist">${tabs.map(([k,l]) => `<button class="tab ${tab===k?"on":""}" role="tab" aria-selected="${tab===k}" data-tab="${k}">${l}</button>`).join("")}</div>`;
-  html += tab === "groups" ? groupsHTML(t, km) : tab === "ranking" ? rankingHTML(t) : tab === "thirds" ? thirdsHTML(t, km) : bracketHTML(t, km);
+  html += tab === "groups" ? groupsHTML(t, km) : tab === "schedule" ? scheduleHTML(t) : tab === "ranking" ? rankingHTML(t) : tab === "thirds" ? thirdsHTML(t, km) : bracketHTML(t, km);
   return {html, tab, phase: ph.label, km};
 }
 
@@ -398,7 +421,7 @@ if(typeof document !== "undefined"){
   // URL: tournament.html#<code>[/<tab>] — the fragment is never sent to the server
   const [rawCode = "", rawTab = ""] = decodeURIComponent(location.hash.slice(1)).split("/");
   const code = rawCode.trim().toLowerCase();
-  let T = null, tab = ["groups","ranking","thirds","ko"].includes(rawTab) ? rawTab : null;
+  let T = null, tab = ["groups","schedule","ranking","thirds","ko"].includes(rawTab) ? rawTab : null;
   const fatal = (title, msg) => {
     document.getElementById("tsub").textContent = "";
     app.innerHTML = `<div class="card" style="margin-top:20px"><div class="card-h"><h2>${esc(title)}</h2></div><div class="card-b"><p class="hint" style="margin-top:0">${esc(msg)}</p><a class="btn pri" href="./">Enter another code</a></div></div>`;

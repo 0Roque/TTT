@@ -46,13 +46,12 @@ def formats(N):
 
 
 def recommended(N):
+    """Default format: 6-9 players play 2 groups and semi-finals; otherwise the longest knockout possible,
+    then about 4 players per group (on a tie, more groups)."""
     fm = formats(N)
-    best = fm[0]
-    for f in fm:
-        d, db = abs(f["G"] - N / 4), abs(best["G"] - N / 4)
-        if d < db - 1e-9 or (abs(d - db) < 1e-9 and f["G"] > best["G"]):
-            best = f
-    return best
+    if N <= 9:
+        return next(f for f in fm if f["K"] == 4)
+    return min(fm, key=lambda f: (-f["K"], abs(f["G"] - N / 4), -f["G"]))
 
 
 def format_label(f, rec=False):
@@ -233,6 +232,25 @@ class Model:
             m = self._parse(e)
             if m and pkey(m[0], m[1]) not in self.kr:
                 self.kr[pkey(m[0], m[1])] = m
+        self.schedule = self._schedule(d.get("matchOrder"))
+
+    def default_schedule(self):
+        """Round 1 of every group, then round 2 of every group, and so on: (group, round, a, b)."""
+        rounds = [self.group_rounds(gi) for gi in range(self.G)]
+        return [(gi, r, a, b) for r in range(max(map(len, rounds))) for gi in range(self.G)
+                if r < len(rounds[gi]) for a, b in rounds[gi][r]]
+
+    def _schedule(self, order):
+        """Play order of all group matches: the pairs listed in "matchOrder" first, then any others in default order."""
+        base = self.default_schedule()
+        by_key, seen, out = {pkey(x[2], x[3]): x for x in base}, set(), []
+        for e in order if isinstance(order, list) else []:
+            if not isinstance(e, list) or len(e) != 2: continue
+            a, b = (self.idx.get(str(v).strip().lower()) for v in e)
+            k = pkey(a, b) if a is not None and b is not None else None
+            if k in by_key and k not in seen:
+                seen.add(k); out.append(by_key[k])
+        return out + [x for x in base if pkey(x[2], x[3]) not in seen]
 
     def _custom_groups(self, groups):
         if not isinstance(groups, list) or not groups:
@@ -533,11 +551,15 @@ class App(tk.Tk):
         ttk.Button(bf, text="Rename…", command=self.rename_player).pack(side="left")
 
         ttk.Label(f, text="Group draw", style="B.TLabel").grid(row=0, column=1, sticky="w")
-        gf = ttk.Frame(f); gf.grid(row=1, column=1, sticky="ew", pady=(4, 8))
+        gf = ttk.Frame(f); gf.grid(row=1, column=1, sticky="ew", pady=(4, 8)); gf.columnconfigure(1, weight=1)
         self.v_fmt = tk.StringVar()
-        self.fmt_box = ttk.Combobox(gf, textvariable=self.v_fmt, state="readonly", width=58); self.fmt_box.pack(side="left")
+        ttk.Label(gf, text="Format:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        # small base width + sticky "ew": the box shrinks on narrow or high-DPI screens instead of pushing the button out
+        self.fmt_box = ttk.Combobox(gf, textvariable=self.v_fmt, state="readonly", width=20); self.fmt_box.grid(row=0, column=1, sticky="ew")
         self.fmt_box.bind("<<ComboboxSelected>>", lambda _e: self.refresh_groups_preview())
-        self.lock_btn = ttk.Button(gf, text="🎲 Draw groups", style="Accent.TButton", command=self.toggle_lock); self.lock_btn.pack(side="left", padx=6)
+        # own row, so it is always visible whatever the window size
+        self.lock_btn = ttk.Button(gf, text="🎲 Draw groups", style="Accent.TButton", command=self.toggle_lock)
+        self.lock_btn.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0), ipadx=10, ipady=3)
         self.groups_txt = tk.Text(f, height=20, wrap="word", font=("TkFixedFont", 10), relief="flat", background="#f8f9fa", padx=12, pady=10)
         self.groups_txt.grid(row=2, column=1, sticky="nsew")
 
@@ -559,10 +581,24 @@ class App(tk.Tk):
         ttk.Combobox(bar, textvariable=self.v_gfilter, values=("All", "To play", "Played"), state="readonly", width=9).pack(side="right")
         ttk.Label(bar, text="Show:").pack(side="right", padx=4)
         self.v_gfilter.trace_add("write", lambda *_: self.refresh_group_matches())
-        ttk.Button(bar, text="Enter result…", style="Accent.TButton", command=self.edit_group_result).pack(side="right", padx=10)
-        self.gtree = self._tree(f, ("Group", "Round", "Player A", "Score", "Player B", "Sets"), (60, 60, 200, 70, 200, 260))
+        ttk.Button(bar, text="Enter / edit result…", style="Accent.TButton", command=self.edit_group_result).pack(side="right", padx=10)
+        obar = ttk.Frame(f); obar.pack(fill="x", pady=(0, 8))
+        ttk.Label(obar, text="Play order:").pack(side="left")
+        ttk.Button(obar, text="▲ Earlier", command=lambda: self.shift_match(-1)).pack(side="left", padx=(6, 0))
+        ttk.Button(obar, text="▼ Later", command=lambda: self.shift_match(1)).pack(side="left", padx=4)
+        ttk.Button(obar, text="Move to #…", command=self.move_match_to).pack(side="left")
+        ttk.Button(obar, text="Reset order…", command=self.reset_order).pack(side="left", padx=4)
+        ttk.Label(obar, text="or drag a match · Alt+↑/↓", style="Muted.TLabel").pack(side="left", padx=8)
+        self.gtree = self._tree(f, ("#", "Group", "Round", "Player A", "Score", "Player B", "Sets"), (45, 60, 60, 200, 70, 200, 240))
+        self.gtree.tag_configure("b2b", foreground="#e37400")
         self.gtree.bind("<Double-1>", lambda _e: self.edit_group_result())
         self.gtree.bind("<Return>", lambda _e: self.edit_group_result())
+        self.gtree.bind("<Alt-Up>", lambda _e: (self.shift_match(-1), "break")[1])
+        self.gtree.bind("<Alt-Down>", lambda _e: (self.shift_match(1), "break")[1])
+        self.gtree.bind("<ButtonPress-1>", self.drag_start, add="+")
+        self.gtree.bind("<B1-Motion>", self.drag_motion, add="+")
+        self.gtree.bind("<ButtonRelease-1>", self.drag_end, add="+")
+        self.drag = None
 
     def _build_ko(self):
         f = self.tab_ko
@@ -712,6 +748,7 @@ class App(tk.Tk):
         if isinstance(self.d.get("groups"), list): self.d["groups"] = [[ren(v) for v in g] for g in self.d["groups"]]
         for key in ("groupResults", "knockoutResults"):
             for e in self.d[key]: e["a"], e["b"] = ren(e.get("a")), ren(e.get("b"))
+        if isinstance(self.d.get("matchOrder"), list): self.d["matchOrder"] = [[ren(v) for v in e] if isinstance(e, list) else e for e in self.d["matchOrder"]]
         self.save(); self.plist.selection_set(i)
 
     def toggle_lock(self):
@@ -723,7 +760,7 @@ class App(tk.Tk):
             if n: msg += f"\n\nThis also deletes all {n} result(s)."
             if not messagebox.askyesno("Undo draw", msg, icon="warning"):
                 return
-            for k in ("groups", "drawnAt"): self.d.pop(k, None)
+            for k in ("groups", "drawnAt", "matchOrder"): self.d.pop(k, None)
             self.d["groupResults"] = []; self.d["knockoutResults"] = []
             self.save(); return
         f = self.chosen_format()
@@ -805,6 +842,67 @@ class App(tk.Tk):
         dlg = ScoreDialog(self, f"{stage}: {m.players[a]} vs {m.players[b]}", m.players[a], m.players[b], m.best_of, m.lookup(m.kr, a, b))
         if dlg.result is not None:
             self.set_result("knockoutResults", a, b, dlg.result)
+
+    # ── play order of the group matches ──
+    def keys_in_order(self): return [f"{gi}:{a}:{b}" for gi, _, a, b in self.m.schedule]
+
+    def save_order(self, keys, select=None):
+        m = self.m
+        self.d["matchOrder"] = [[m.players[int(a)], m.players[int(b)]] for a, b in (k.split(":")[1:] for k in keys)]
+        self.save()
+        if select and self.gtree.exists(select): self.gtree.selection_set(select); self.gtree.focus(select); self.gtree.see(select)
+
+    def move_match(self, key, pos):
+        keys = self.keys_in_order()
+        if key not in keys: return
+        pos = max(0, min(pos, len(keys) - 1))
+        if keys.index(key) == pos: return
+        keys.remove(key); keys.insert(pos, key)
+        self.save_order(keys, key)
+
+    def shift_match(self, step):
+        sel = self.gtree.selection()
+        if not sel or not self.m or not self.m.drawn: return
+        # with a filter active, jump past the hidden matches to the neighbouring visible one
+        vis, keys = list(self.gtree.get_children()), self.keys_in_order()
+        i = vis.index(sel[0]) + step
+        if 0 <= i < len(vis): self.move_match(sel[0], keys.index(vis[i]))
+
+    def move_match_to(self):
+        sel = self.gtree.selection()
+        if not sel or not self.m or not self.m.drawn: return
+        n = len(self.m.schedule)
+        pos = simpledialog.askinteger("Move match", f"New position (1–{n}):", parent=self, minvalue=1, maxvalue=n,
+                                      initialvalue=self.keys_in_order().index(sel[0]) + 1)
+        if pos: self.move_match(sel[0], pos - 1)
+
+    def reset_order(self):
+        if not self.m or not self.m.drawn or "matchOrder" not in self.d: return
+        if messagebox.askyesno("Reset order", "Put every group match back in the default order (round 1 of every group, then round 2…)?\n\nResults are kept."):
+            self.d.pop("matchOrder", None); self.save()
+
+    def drag_start(self, e):
+        row = self.gtree.identify_row(e.y)
+        self.drag = row if row and self.gtree.identify_region(e.x, e.y) == "cell" else None
+
+    def drag_motion(self, e):
+        if not self.drag: return
+        self.gtree.config(cursor="sb_v_double_arrow")
+        tgt = self.gtree.identify_row(e.y)
+        if tgt and tgt != self.drag:
+            self.gtree.move(self.drag, "", self.gtree.index(tgt)); self.dragged = True  # preview only, saved on release
+
+    def drag_end(self, e):
+        src, moved, self.drag, self.dragged = self.drag, getattr(self, "dragged", False), None, False
+        self.gtree.config(cursor="")
+        if not src or not moved or not self.m or not self.m.drawn: return
+        vis, keys = list(self.gtree.get_children()), self.keys_in_order()
+        if len(vis) < 2: return
+        i, rest = vis.index(src), [k for k in keys if k != src]
+        # place it right after the visible match now above it (or before the one below when it is first)
+        rest.insert(rest.index(vis[i - 1]) + 1 if i > 0 else rest.index(vis[1]), src)
+        if rest != keys: self.save_order(rest, src)
+        else: self.refresh_group_matches(); self.gtree.selection_set(src)
 
     # ── publish ──
     def publish(self):
@@ -915,16 +1013,16 @@ class App(tk.Tk):
         tv.delete(*tv.get_children())
         if not m or not m.drawn:
             self.g_info.config(text=f"Needs at least {QUORUM} players." if not (m and m.quorum) else "Make the draw in “Players & groups” first."); return
-        flt, done_n, total = self.v_gfilter.get(), 0, 0
-        for gi in range(m.G):
-            for ri, rd in enumerate(m.group_rounds(gi)):
-                for a, b in rd:
-                    s = m.lookup(m.gr, a, b); total += 1; done_n += bool(s)
-                    if (flt == "To play" and s) or (flt == "Played" and not s): continue
-                    sa, sb, _, _ = summ(s) if s else (0, 0, 0, 0)
-                    tv.insert("", "end", iid=f"{gi}:{a}:{b}", tags=("done" if s else "todo",),
-                              values=(GL(gi), ri + 1, m.players[a], f"{sa} – {sb}" if s else "—", m.players[b], ", ".join(f"{x}-{y}" for x, y in s) if s else ""))
-        self.g_info.config(text=f"{done_n} of {total} matches played  ·  double-click a match to enter its score")
+        flt, done_n, b2b, prev = self.v_gfilter.get(), 0, 0, set()
+        for n, (gi, ri, a, b) in enumerate(m.schedule, 1):
+            s = m.lookup(m.gr, a, b); done_n += bool(s)
+            back = bool(prev & {a, b}); prev = {a, b}; b2b += back   # a player also plays the match just before
+            if (flt == "To play" and s) or (flt == "Played" and not s): continue
+            sa, sb, _, _ = summ(s) if s else (0, 0, 0, 0)
+            tv.insert("", "end", iid=f"{gi}:{a}:{b}", tags=("done" if s else "b2b" if back else "todo",),
+                      values=(n, GL(gi), ri + 1, m.players[a], f"{sa} – {sb}" if s else "—", m.players[b], ", ".join(f"{x}-{y}" for x, y in s) if s else ""))
+        self.g_info.config(text=f"{done_n} of {len(m.schedule)} matches played  ·  double-click a match to enter or edit its score"
+                           + (f"  ·  {b2b} back-to-back (orange)" if b2b else ""))
 
     def refresh_ko(self):
         tv, m = self.ktree, self.m

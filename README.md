@@ -42,7 +42,7 @@ A desktop window for running a tournament offline. Every change is saved straigh
 
 1. **New…**: create a tournament. Its code is shown in the **Details** tab, with buttons to copy the code and the share link.
 2. **Players & groups**: add players one at a time or with **Add many…** (one name per line). Once there are at least 6, choose a group format and press **🎲 Draw groups** for a random draw (see *The group draw* below).
-3. **Group matches**: double-click a match to enter its set scores. Scores are checked: first to 11, win by 2, and the match must be finished.
+3. **Group matches**: all group matches in play order (`#`). Double-click a match to enter or edit its set scores. Scores are checked: first to 11, win by 2, and the match must be finished. To change the order (for example when a player has a schedule conflict), drag a match, use **▲ Earlier** / **▼ Later** (or Alt+↑/↓), or **Move to #…**. **Reset order…** goes back to the default (round 1 of every group, then round 2…). Matches shown in orange have a player who also plays the match just before. Results are not affected by the order, and the website shows the same order.
 4. **Knockout**: matches appear as soon as their players are known. Double-click to enter the score.
 5. **Standings**: group tables with W / SW / Pts and the best 3rd places.
 6. **Publish**: encrypts the tournaments, then commits and pushes **only** `data/` to GitHub. The status next to the button shows whether the website is up to date.
@@ -102,8 +102,8 @@ The table shows the **default (recommended)** format. When making the draw in th
 | 15 | 4 | 3×4 + 3 | Top 2 of each group (8) | Quarter-finals | 21 | 8 | 29 |
 | 16 | 4 | 4×4 | Top 2 of each group (8) | Quarter-finals | 24 | 8 | 32 |
 | 17 | 4 | 5 + 3×4 | Top 2 of each group (8) | Quarter-finals | 28 | 8 | 36 |
-| 18 | 4 | 2×5 + 2×4 | Top 2 of each group (8) | Quarter-finals | 32 | 8 | 40 |
-| 19 | 4 | 3×5 + 4 | Top 2 of each group (8) | Quarter-finals | 36 | 8 | 44 |
+| 18 | 6 | 6×3 | Top 2 of each group + 4 best 3rds (16) | Round of 16 | 18 | 16 | 34 |
+| 19 | 6 | 4 + 5×3 | Top 2 of each group + 4 best 3rds (16) | Round of 16 | 21 | 16 | 37 |
 | 20 | 6 | 2×4 + 4×3 | Top 2 of each group + 4 best 3rds (16) | Round of 16 | 24 | 16 | 40 |
 | 21 | 6 | 3×4 + 3×3 | Top 2 of each group + 4 best 3rds (16) | Round of 16 | 27 | 16 | 43 |
 | 22 | 6 | 4×4 + 2×3 | Top 2 of each group + 4 best 3rds (16) | Round of 16 | 30 | 16 | 46 |
@@ -128,7 +128,7 @@ The table shows the **default (recommended)** format. When making the draw in th
 
 \* Knockout matches include the 3rd-place match. Each player plays 2–4 group matches (group size − 1).
 
-How the default is chosen: about 4 players per group. When two options are equally close, the one with more groups wins.
+How the default is chosen: 6–9 players always play 2 groups and semi-finals. From 10 players, the format with the **longest knockout** wins, then the one closest to 4 players per group (on a tie, more groups).
 
 ## Tournament file format
 
@@ -152,6 +152,7 @@ How the default is chosen: about 4 players per group. When two options are equal
 |---|---|
 | `players` | Participant names, in any order. Names must be unique. |
 | `groups` | Written by the app's random draw. Without it, the website shows "Waiting for the draw". Every player must be in exactly one group of at least 3. |
+| `matchOrder` | Play order of the group matches as `[["Ana", "David"], …]`, written by the app. Matches not listed follow in the default order. Optional. |
 | `drawnAt` | Date and time of the draw (`DD/MM/YYYY HH:MM`), written by the app. |
 | `groupResults` | One entry per finished group match. The `a`/`b` order is free, and `sets` are from `a`'s point of view. |
 | `knockoutResults` | Same format. The page places each result in the bracket by matching the two players. |
