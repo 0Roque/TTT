@@ -390,7 +390,7 @@ MUTED, ERR = "#5f6368", "#c5221f"
 
 def git(*args, timeout=90):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # never hang waiting for a password prompt
-    return subprocess.run(["git", "-C", str(ttt.ROOT), *args], capture_output=True, text=True, timeout=timeout, env=env)
+    return subprocess.run(["git", "-C", str(ttt.ROOT), *args], capture_output=True, text=True, encoding="utf-8", timeout=timeout, env=env)
 
 
 def pages_url():
@@ -621,7 +621,7 @@ class App(tk.Tk):
         items = []
         for p in sorted(ttt.SRC.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
             if not ttt.CODE_RE.match(p.stem): continue
-            try: name = json.loads(p.read_text()).get("name", "?")
+            try: name = json.loads(p.read_text(encoding="utf-8")).get("name", "?")
             except Exception: name = "(invalid JSON)"
             items.append((p.stem, f"{name}   ·   {p.stem[:6]}…"))
         self.codes = [c for c, _ in items]
@@ -633,7 +633,7 @@ class App(tk.Tk):
 
     def open(self, code):
         try:
-            self.d = json.loads(self.path(code).read_text())
+            self.d = json.loads(self.path(code).read_text(encoding="utf-8"))
         except Exception as e:
             messagebox.showerror("Cannot open", f"tournaments/{code}.json is not valid JSON:\n{e}"); return
         self.code = code; self.mtime = self.path().stat().st_mtime

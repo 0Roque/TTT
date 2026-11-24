@@ -12,7 +12,7 @@ file reveals nothing — not the code, the name, the players or the results.
   tools/ttt.py check                           verify no readable tournament data is tracked or staged in git
   tools/ttt.py install-hook                    install a git pre-commit hook that runs that check on every commit
 """
-import base64, hashlib, hmac, json, os, re, secrets, string, subprocess, sys
+import base64, hashlib, hmac, json, os, re, secrets, shutil, string, subprocess, sys
 from datetime import date
 from pathlib import Path
 
@@ -30,8 +30,23 @@ def file_id(code: str) -> str:
     return derive(code, "ttt-file").hex()
 
 
+def find_openssl() -> str:
+    """openssl from PATH, or (on Windows) the copy bundled with Git for Windows, which is usually not on PATH."""
+    exe = shutil.which("openssl")
+    git = shutil.which("git")
+    if not exe and git:
+        root = Path(git).resolve().parent.parent  # <Git>/cmd/git.exe or <Git>/bin/git.exe
+        for sub in ("usr/bin", "ucrt64/bin", "mingw64/bin"):
+            cand = root / sub / "openssl.exe"
+            if cand.is_file():
+                exe = str(cand); break
+    if not exe:
+        raise RuntimeError("openssl was not found. Install Git for Windows (it includes openssl) or add openssl to PATH.")
+    return exe
+
+
 def openssl(args, data: bytes) -> bytes:
-    return subprocess.run(["openssl", "enc", "-aes-256-cbc", *args], input=data, capture_output=True, check=True).stdout
+    return subprocess.run([find_openssl(), "enc", "-aes-256-cbc", *args], input=data, capture_output=True, check=True).stdout
 
 
 def encrypt(code: str, plain: bytes) -> dict:
@@ -67,19 +82,19 @@ def create_tournament(name="Table Tennis Tournament", best_of=5) -> str:
             break
     data = {"name": name, "date": date.today().strftime("%d/%m/%Y"), "bestOf": int(best_of),
             "players": [], "groupResults": [], "knockoutResults": []}
-    (SRC / f"{code}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    (SRC / f"{code}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
     return code
 
 
 def canonical(src: Path) -> bytes:
-    return json.dumps(json.loads(src.read_text()), ensure_ascii=False, separators=(",", ":")).encode()
+    return json.dumps(json.loads(src.read_text(encoding="utf-8")), ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def is_published(code: str) -> bool:
     """True when data/ already holds an encrypted copy identical to tournaments/<code>.json."""
     try:
         out = OUT / f"{file_id(code)}.json"
-        return decrypt(code, json.loads(out.read_text())) == canonical(SRC / f"{code}.json")
+        return decrypt(code, json.loads(out.read_text(encoding="utf-8"))) == canonical(SRC / f"{code}.json")
     except Exception:
         return False
 
@@ -102,7 +117,7 @@ def publish_all(log=print) -> int:
         name = json.loads(plain).get("name", "")
         if is_published(code):  # keep the file untouched when nothing changed (a new IV would make a noisy git diff)
             log(f"same   {code[:6]}…  {name}"); continue
-        out.write_text(json.dumps(encrypt(code, plain)) + "\n")
+        out.write_text(json.dumps(encrypt(code, plain)) + "\n", encoding="utf-8", newline="\n")
         log(f"wrote  {code[:6]}…  {name}  →  data/{out.name}")
     orphans = [p.name for p in OUT.glob("*.json") if p.name not in expected]
     if orphans:
@@ -131,12 +146,12 @@ def cmd_decrypt(code):
     out = OUT / f"{file_id(code)}.json"
     if not out.exists():
         sys.exit("No published tournament for this code.")
-    plain = json.loads(decrypt(code, json.loads(out.read_text())))
+    plain = json.loads(decrypt(code, json.loads(out.read_text(encoding="utf-8"))))
     SRC.mkdir(exist_ok=True)
     dst = SRC / f"{code}.json"
     if dst.exists():
         sys.exit(f"{dst.relative_to(ROOT)} already exists — not overwriting.")
-    dst.write_text(json.dumps(plain, indent=2, ensure_ascii=False) + "\n")
+    dst.write_text(json.dumps(plain, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
     print(f"Restored {dst.relative_to(ROOT)}")
 
 
@@ -147,13 +162,13 @@ BOX_KEYS = {"v", "iv", "ct", "tag"}
 def safety_problems(staged=True) -> list:
     """Checks what is (about to be) committed: nothing from tournaments/, and only encrypted files in data/."""
     def git(*a):
-        return subprocess.run(["git", "-C", str(ROOT), *a], capture_output=True, text=True).stdout
+        return subprocess.run(["git", "-C", str(ROOT), *a], capture_output=True, text=True, encoding="utf-8").stdout
     if staged:
         paths = [p for p in git("diff", "--cached", "--name-only", "--diff-filter=ACMR").splitlines() if p]
         read = lambda p: git("show", f":{p}")
     else:
         paths = [p for p in git("ls-files").splitlines() if p and (ROOT / p).exists()]  # deleted files are not a leak
-        read = lambda p: (ROOT / p).read_text()
+        read = lambda p: (ROOT / p).read_text(encoding="utf-8")
     problems = []
     for p in paths:
         if p.startswith("tournaments/") or (p.endswith(".json") and not p.startswith("data/")):
@@ -181,7 +196,14 @@ def cmd_check():
 
 HOOK = """#!/bin/sh
 # Installed by tools/ttt.py install-hook: blocks commits containing readable tournament data.
-python3 -B "$(git rev-parse --show-toplevel)/tools/ttt.py" precommit
+# Tries python3 (Linux/macOS), then python / py (Windows); the -c check skips the Microsoft Store stub.
+for py in python3 python py; do
+  if "$py" -c "" >/dev/null 2>&1; then
+    exec "$py" -B "$(git rev-parse --show-toplevel)/tools/ttt.py" precommit
+  fi
+done
+echo "pre-commit: Python not found, cannot run the tournament data safety check" >&2
+exit 1
 """
 
 
@@ -194,13 +216,13 @@ def cmd_precommit():
 def ensure_hook() -> bool:
     """Installs the pre-commit safety hook if it is missing. Returns True when it was (re)installed."""
     hook = ROOT / ".git" / "hooks" / "pre-commit"
-    if not (ROOT / ".git").is_dir() or (hook.exists() and hook.read_text() == HOOK):
+    if not (ROOT / ".git").is_dir() or (hook.exists() and hook.read_bytes() == HOOK.encode()):
         return False
-    if hook.exists() and "ttt.py" not in hook.read_text():
+    if hook.exists() and "ttt.py" not in hook.read_text(encoding="utf-8"):
         print(f"warning: {hook.relative_to(ROOT)} already exists and was left unchanged; add the line from HOOK to it", file=sys.stderr)
         return False
     hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text(HOOK); hook.chmod(0o755)
+    hook.write_bytes(HOOK.encode()); hook.chmod(0o755)  # bytes: a CRLF shebang breaks the hook
     return True
 
 
